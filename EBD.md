@@ -6,6 +6,17 @@
 
 The goal of this artifact is to define and represent the key entities and relationships that form the foundation of the database design. It provides a clear and structured conceptual view of the system’s data through a UML class diagram.
 
+### Additional Business Rules
+Additional business rules or restrictions that cannot be conveyed directly through the UML class diagram are described in this section. 
+
+| Identifier | Name | Description |
+|------------|------|-------------|
+| BR1 | Owner Donation Restriction | A campaign owner cannot contribute (donate) to their own campaign. |
+| BR2 | Campaign Deletion Policy | A campaign can only be deleted when its state is *unfunded*; it cannot be deleted in *ongoing*, *paused*, *completed* or *suspended* states. |
+| BR3 | User Account Deletion Behavior | When a user account is deleted:<br>- Associated OAuthAccounts and Notifications are deleted (*cascade*).<br>- The `user_id` field in Transactions, Comments, and Campaigns is set to *NULL*.<br>- Transactions linked to campaigns that are not *completed* become automatically invalid.<br>- If a campaign loses all owners, BR4 applies. |
+| BR4 | Owner Loss and Auto-Suspension | If a campaign has no remaining owners (for example, after account deletion), its state automatically changes to *suspended*. |
+| BR5 | Campaign State Behavior | The allowed actions depend on the campaign’s current state:<br>- Unfunded: owner may delete; users may donate and comment.<br>- Ongoing: owner cannot delete; users may donate and comment.<br>- Completed: owner cannot delete; users cannot donate but may comment. The *completed* state is final and cannot be changed.<br>- Paused: owner cannot delete; users cannot donate but may comment. The campaign can be resumed by its owner.<br>- Suspended: owner cannot delete; users cannot donate, comment, or view it. Only administrators can access, modify, or unsuspend the campaign. |
+
 ## A5 : Relational Schema
 
 | ID | Relation |
