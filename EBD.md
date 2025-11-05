@@ -164,3 +164,28 @@ States: ENUM (‘unfunded’, ‘ongoing’, ‘completed’, ‘paused’, ‘s
 
 ## A6 : Indexes, Integrity and Populated Database
 
+
+### Database workload
+
+Understanding the system’s workload and performance goals is key to effective database design. This includes estimating the number of tuples in each relation and their expected growth over time. The table below summarizes these estimates for the database.
+
+| ID  | Relation name               | Order of magnitude      | Estimated growth   |
+|-----|-----------------------------|-------------------------|--------------------|
+| R01 | user_account                | 10 k (tens of thousands)| 100(hundreds) /day |
+| R02 | campaign                    | 1 k (thousands)         | 10(tens) /day      |
+| R03 | admin                       | 10 (tens)               | ~0 /day            |
+| R04 | oauth_account               | 10 k                    | 10 /day            |
+| R05 | blocked_user                | 100 (hundreds)          | 1(unit) /day       |
+| R06 | appeal                      | 100                     | 1 /day             |
+| R07 | comment                     | 10 k                    | 100 /day           |
+| R08 | transaction                 | 10 k                    | 100 /day           |
+| R09 | category                    | 100                     | ~0 /day            |
+| R10 | update                      | 1 k                     | 10 /day            |
+| R11 | resource                    | 1 k                     | 10 /day            |
+| R12 | notification                | 10 k                    | 100 /day           |
+| R13 | notification_of_update      | 1 k                     | 10                 |
+| R14 | notification_of_comment     | 10 k                    | 100 /day           |
+| R15 | notification_of_transaction | 10 k                    | 100 /day           |
+| R16 | owner                       | 1 k                     | 10 /day            |
+| R17 | follow                      | 10 k                    | 100 /day           |
+| R18 | user_notification           | 10 k                    | 100 /day           |
