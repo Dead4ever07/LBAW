@@ -26,38 +26,6 @@ CREATE TABLE IF NOT EXISTS user_account (
     profile_picture TEXT
 );
 
--- CATEGORY
-CREATE TABLE IF NOT EXISTS category (
-    id              SERIAL PRIMARY KEY,
-    name            TEXT NOT NULL UNIQUE
-);
-
--- CAMPAIGN
-CREATE TABLE IF NOT EXISTS campaign (
-    id              SERIAL PRIMARY KEY,
-    name            TEXT NOT NULL,
-    description     TEXT NOT NULL,
-    funded          NUMERIC NOT NULL,
-    goal            NUMERIC NOT NULL,
-    start_date      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    end_date        TIMESTAMPTZ,
-    close_date      TIMESTAMPTZ,
-    state           campaign_state NOT NULL,
-    creator_id      INTEGER REFERENCES user_account(id) ON DELETE SET NULL,
-    category_id     INTEGER NOT NULL REFERENCES category(id),
-    CHECK (funded <= goal),
-    CHECK (end_date IS NULL OR end_date >= start_date),
-    CHECK (close_date IS NULL OR close_date >= start_date),
-    CHECK (end_date IS NULL OR close_date IS NULL OR end_date <= close_date)
-);
-
--- ADMIN
-CREATE TABLE IF NOT EXISTS admin (
-    id              SERIAL PRIMARY KEY,
-    email           TEXT NOT NULL UNIQUE,
-    password        TEXT NOT NULL
-);
-
 -- BLOCKED USER
 CREATE TABLE IF NOT EXISTS blocked_user (
     id        INTEGER NOT NULL PRIMARY KEY REFERENCES user_account(id) ON DELETE CASCADE,
@@ -67,10 +35,55 @@ CREATE TABLE IF NOT EXISTS blocked_user (
 
 -- APPEAL
 CREATE TABLE IF NOT EXISTS appeal (
-    id        SERIAL PRIMARY KEY,
-    author_id INTEGER NOT NULL REFERENCES blocked_user(id) ON DELETE CASCADE,
-    whining   TEXT NOT NULL,
+    id         SERIAL PRIMARY KEY,
+    author_id  INTEGER NOT NULL REFERENCES blocked_user(id) ON DELETE CASCADE,
+    whining    TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ADMIN
+CREATE TABLE IF NOT EXISTS admin (
+    id              SERIAL PRIMARY KEY,
+    email           TEXT NOT NULL UNIQUE,
+    password        TEXT NOT NULL
+);
+
+-- CAMPAIGN
+CREATE TABLE IF NOT EXISTS campaign (
+    id              SERIAL PRIMARY KEY,
+    name            TEXT NOT NULL,
+    description     TEXT NOT NULL,
+    funded          NUMERIC NOT NULL DEFAULT 0,
+    goal            NUMERIC NOT NULL,
+    start_date      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    end_date        TIMESTAMPTZ,
+    close_date      TIMESTAMPTZ,
+    state           campaign_state NOT NULL,
+    category_id     INTEGER NOT NULL REFERENCES category(id),
+    CHECK (goal > 0),
+    CHECK (funded >= 0),
+    CHECK (funded <= goal),
+    CHECK (end_date IS NULL OR end_date >= start_date),
+    CHECK (close_date IS NULL OR close_date >= start_date),
+    CHECK (end_date IS NULL OR close_date IS NULL OR end_date <= close_date)
+);
+
+-- CATEGORY
+CREATE TABLE IF NOT EXISTS category (
+    id              SERIAL PRIMARY KEY,
+    name            TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS campaign_collaborator (
+    campaign_id INTEGER NOT NULL REFERENCES campaign(id) ON DELETE CASCADE,
+    user_id     INTEGER NOT NULL REFERENCES user_account(id) ON DELETE CASCADE,
+    PRIMARY KEY (campaign_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS campaign_follower (
+    user_id     INTEGER NOT NULL REFERENCES user_account(id) ON DELETE CASCADE,
+    campaign_id INTEGER NOT NULL REFERENCES campaign(id) ON DELETE CASCADE,
+    PRIMARY KEY (user_id, campaign_id)
 );
 
 -- NOTIFICATION
@@ -83,13 +96,13 @@ CREATE TABLE IF NOT EXISTS notification (
 );
 
 -- NOTIFICATION_RECEIVED
--- trigger to snoozed !
 CREATE TABLE IF NOT EXISTS notification_received (
     id              SERIAL PRIMARY KEY,
     is_read         BOOLEAN NOT NULL DEFAULT FALSE,
     snoozed_until   TIMESTAMPTZ,
     notification_id INTEGER NOT NULL REFERENCES notification(id) ON DELETE CASCADE,
     user_id         INTEGER NOT NULL REFERENCES user_account(id) ON DELETE CASCADE,
+    UNIQUE (notification_id, user_id)
 );
 
 -- COMMENT
@@ -108,6 +121,7 @@ CREATE TABLE IF NOT EXISTS transaction (
     id              SERIAL PRIMARY KEY,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     amount          NUMERIC NOT NULL,
+    is_valid        BOOLEAN NOT NULL DEFAULT TRUE,
     author_id       INTEGER REFERENCES user_account(id) ON DELETE SET NULL,
     campaign_id     INTEGER NOT NULL REFERENCES campaign(id),
     notification_id INTEGER REFERENCES notification(id),
@@ -120,7 +134,7 @@ CREATE TABLE IF NOT EXISTS campaign_update (
     content         TEXT NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     campaign_id     INTEGER NOT NULL REFERENCES campaign(id),
-    notification_id INTEGER REFERENCES notification(id)
+    notification_id INTEGER UNIQUE REFERENCES notification(id)
 );
 
 -- RESOURCE
@@ -132,21 +146,314 @@ CREATE TABLE IF NOT EXISTS resource (
     campaign_id     INTEGER REFERENCES campaign(id),
     update_id       INTEGER REFERENCES campaign_update(id),
     CHECK (
-        (campaign_id IS NOT NULL AND update_id IS NULL)
-        OR (update_id IS NOT NULL AND campaign_id IS NULL)
+        (campaign_id IS NOT NULL AND update_id IS NULL) OR 
+        (update_id IS NOT NULL AND campaign_id IS NULL)
     )
 );
 
+--TRIGGERS
 
-CREATE TABLE IF NOT EXISTS campaign_collaborator (
-    campaign_id INTEGER NOT NULL REFERENCES campaign(id) ON DELETE SET CASCADE,
-    user_id INTEGER NOT NULL REFERENCES user_account(id) ON SET NULL,
-    PRIMARY KEY (campaign_id, user_id)
-);
+-- TRIGGER01
+-- Nova transação → aumentar funded da campanha
+-- guarda: NUNCA deixar funded ultrapassar goal
+CREATE OR REPLACE FUNCTION transaction_add_to_funded() RETURNS TRIGGER AS
+$BODY$
+DECLARE
+  v_goal   NUMERIC;
+  v_funded NUMERIC;
+BEGIN
+    SELECT goal, funded
+        INTO v_goal, v_funded
+        FROM campaign
+    WHERE id = NEW.campaign_id
+    FOR UPDATE;
+
+    IF v_funded + NEW.amount > v_goal THEN
+        RAISE EXCEPTION 'This contribution would exceed the campaign goal.';
+    END IF;
+
+    UPDATE campaign
+        SET funded = funded + NEW.amount
+    WHERE id = NEW.campaign_id;
+
+    RETURN NEW;
+END
+$BODY$
+LANGUAGE plpgsql;
+
+CREATE TRIGGER transaction_add_to_funded
+    AFTER INSERT ON transaction
+    FOR EACH ROW
+    EXECUTE PROCEDURE transaction_add_to_funded();
 
 
-CREATE TABLE IF NOT EXISTS campaign_follower (
-    user_id INTEGER NOT NULL REFERENCES user_account(id) ON DELETE CASCADE,
-    campaign_id INTEGER NOT NULL REFERENCES campaign(id) ON DELETE CASCADE,
-    PRIMARY KEY (user_id, campaign_id)
-);
+-- TRIGGER02
+-- Quando campaign.funded é atualizado:
+--   funded = 0: state = 'unfunded'
+--   funded = goal: state = 'completed'
+--   funded ≠ 0 && funded ≠ goal: state = 'ongoing'
+CREATE OR REPLACE FUNCTION campaign_state_from_funded() RETURNS TRIGGER AS
+$BODY$
+BEGIN
+    IF TG_OP = 'UPDATE' AND NEW.funded IS NOT DISTINCT FROM OLD.funded THEN RETURN NEW; END IF;
+
+    IF NEW.funded = 0 THEN NEW.state := 'unfunded';
+    ELSIF NEW.funded = NEW.goal THEN NEW.state := 'completed';
+    ELSE NEW.state := 'ongoing';
+    END IF;
+
+    RETURN NEW;
+END
+$BODY$
+LANGUAGE plpgsql;
+
+CREATE TRIGGER campaign_state_from_funded
+    BEFORE UPDATE OF funded ON campaign
+    FOR EACH ROW
+    EXECUTE PROCEDURE campaign_state_from_funded();
+
+
+-- TRIGGER03
+-- Se o autor da transação passa a NULL
+-- e a campanha não está 'completed', a transação torna-se inválida.
+CREATE OR REPLACE FUNCTION transaction_author_null_invalidate() RETURNS TRIGGER AS
+$BODY$
+DECLARE
+    v_state campaign_state;
+BEGIN
+    IF NEW.author_id IS DISTINCT FROM OLD.author_id AND NEW.author_id IS NULL THEN
+        SELECT state INTO v_state FROM campaign WHERE id = NEW.campaign_id;
+        IF v_state <> 'completed' THEN NEW.is_valid := FALSE; END IF;
+    END IF;
+    RETURN NEW;
+END
+$BODY$
+LANGUAGE plpgsql;
+
+CREATE TRIGGER transaction_author_null_invalidate
+    BEFORE UPDATE OF author_id ON transaction
+    FOR EACH ROW
+    EXECUTE PROCEDURE transaction_author_null_invalidate();
+
+
+-- TRIGGER4
+-- Quando is_valid muda: atualizar funded da campanha (+amount ou -amount)
+CREATE OR REPLACE FUNCTION transaction_validity_delta() RETURNS TRIGGER AS
+$BODY$
+DECLARE
+  v_goal   NUMERIC;
+  v_funded NUMERIC;
+BEGIN
+    IF NEW.is_valid IS DISTINCT FROM OLD.is_valid THEN
+        -- add
+        IF NEW.is_valid = TRUE THEN
+            SELECT goal, funded INTO v_goal, v_funded
+            FROM campaign
+            WHERE id = NEW.campaign_id
+            FOR UPDATE;
+            
+            IF v_funded + NEW.amount > v_goal THEN RAISE EXCEPTION 'Re-validating this contribution would exceed the campaign goal.'; END IF;
+
+        UPDATE campaign SET funded = funded + NEW.amount WHERE id = NEW.campaign_id;
+        END IF;
+
+        -- sub
+        IF NEW.is_valid = FALSE THEN
+        UPDATE campaign SET funded = funded - OLD.amount WHERE id = OLD.campaign_id;
+        END IF;
+
+    END IF;
+    RETURN NEW;
+END
+$BODY$
+LANGUAGE plpgsql;
+
+CREATE TRIGGER transaction_validity_delta
+    AFTER UPDATE OF is_valid ON transaction
+    FOR EACH ROW
+    EXECUTE PROCEDURE transaction_validity_delta();
+
+
+-- TRIGGER5
+-- Se uma campanha ficar sem dono (sem creator_id e sem colaboradores) fica 'suspended'
+CREATE OR REPLACE FUNCTION campaign_suspend_if_no_owner() RETURNS TRIGGER AS
+$BODY$
+DECLARE
+    v_has_collab  BOOLEAN;
+    v_campaign_id INTEGER := COALESCE(NEW.id, NEW.campaign_id, OLD.campaign_id);
+BEGIN
+    SELECT EXISTS ( 
+        SELECT 1
+        FROM campaign_collaborator
+        WHERE campaign_id = v_campaign_id )
+    INTO v_has_collab;
+
+    IF v_has_collab = FALSE THEN
+        UPDATE campaign SET state = 'suspended' WHERE id = v_campaign_id;
+    END IF;
+
+    RETURN COALESCE(NEW, OLD);
+END
+$BODY$
+LANGUAGE plpgsql;
+
+CREATE TRIGGER campaign_suspend_if_no_collab
+    AFTER DELETE ON campaign_collaborator
+    FOR EACH ROW
+    EXECUTE PROCEDURE campaign_suspend_if_no_owner();
+
+
+-- TRIGGER06
+-- INSERT on campaign_update: create notification(type='update')
+-- deliver to: all followers of that campaign
+
+CREATE OR REPLACE FUNCTION campaign_update_auto_notification() RETURNS TRIGGER AS
+$BODY$
+DECLARE
+    v_notif_id INTEGER;
+    v_name     TEXT;
+BEGIN
+    -- campaign name 
+    SELECT name INTO v_name
+    FROM campaign
+    WHERE id = NEW.campaign_id;
+    
+    -- create the notification
+    INSERT INTO notification(type, content, link)
+    VALUES ('update',
+        CONCAT('New update on campaign ', v_name),
+        CONCAT('/campaigns/', NEW.campaign_id, '#update-', NEW.id) -- might be changed in the future
+    )
+    RETURNING id INTO v_notif_id;
+
+    -- attach to the update
+    UPDATE campaign_update
+        SET notification_id = v_notif_id
+    WHERE id = NEW.id;
+
+    -- send the notifications
+    INSERT INTO notification_received(notification_id, user_id)
+    SELECT v_notif_id, f.user_id
+        FROM campaign_follower f
+    WHERE f.campaign_id = NEW.campaign_id AND f.user_id IS NOT NULL
+    ON CONFLICT (notification_id, user_id) DO NOTHING;
+
+    RETURN NEW;
+END
+$BODY$
+LANGUAGE plpgsql;
+
+CREATE TRIGGER campaign_update_auto_notification
+    AFTER INSERT ON campaign_update
+    FOR EACH ROW
+    EXECUTE PROCEDURE campaign_update_auto_notification();
+
+
+-- TRIGGER07
+-- INSERT on comment: create notification(type='comment')
+-- deliver to: campaign collaborators and parent comment author
+
+CREATE OR REPLACE FUNCTION comment_auto_notification() RETURNS TRIGGER AS
+$BODY$
+DECLARE
+    v_notif_id INTEGER;
+    v_name     TEXT;
+BEGIN
+    -- campaign name 
+    SELECT name INTO v_name
+    FROM campaign
+    WHERE id = NEW.campaign_id;
+
+    -- create the notification
+    INSERT INTO notification(type, content, link)
+    VALUES ( 'comment',
+        CONCAT('New comment on campaign ', v_name),
+        CONCAT('/campaigns/', NEW.campaign_id, '#comment-', NEW.id) -- might be changed in the future
+    )
+    RETURNING id INTO v_notif_id;
+
+    -- attach to the comment
+    UPDATE comment
+        SET notification_id = v_notif_id
+    WHERE id = NEW.id;
+
+   
+    WITH recipients AS (
+        SELECT cc.user_id
+            FROM campaign_collaborator cc
+            WHERE cc.campaign_id = NEW.campaign_id
+        UNION
+        SELECT p.author_id
+            FROM comment p
+            WHERE NEW.parent_id IS NOT NULL AND p.id = NEW.parent_id
+    )
+
+     -- send the notifications
+    INSERT INTO notification_received (notification_id, user_id)
+    SELECT v_notif_id, r.user_id
+        FROM recipients r
+    WHERE r.user_id IS NOT NULL
+    ON CONFLICT (notification_id, user_id) DO NOTHING;
+
+
+    RETURN NEW;
+END
+$BODY$
+LANGUAGE plpgsql;
+
+CREATE TRIGGER comment_auto_notification
+    AFTER INSERT ON comment
+    FOR EACH ROW
+    EXECUTE PROCEDURE comment_auto_notification();
+
+
+-- TRIGGER08
+-- INSERT on transaction: create notification(type='transaction')
+-- deliver to: campaign collaborators
+CREATE OR REPLACE FUNCTION transaction_auto_notification() RETURNS TRIGGER AS
+$BODY$
+DECLARE
+  v_notif_id INTEGER;
+  v_name     TEXT;
+BEGIN
+    -- campaign name
+    SELECT name INTO v_name
+        FROM campaign
+    WHERE id = NEW.campaign_id;
+
+    -- create the notification
+    INSERT INTO notification(type, content, link)
+    VALUES ('transaction',
+        CONCAT('New contribution to campaign ', v_name),
+        CONCAT('/campaigns/', NEW.campaign_id, '#transaction-', NEW.id)
+    )
+    RETURNING id INTO v_notif_id;
+
+    -- attach to the transaction
+    UPDATE transaction
+        SET notification_id = v_notif_id
+    WHERE id = NEW.id;
+
+
+    WITH recipients AS (
+        SELECT cc.user_id
+            FROM campaign_collaborator cc
+        WHERE cc.campaign_id = NEW.campaign_id
+    )
+
+    -- send the notifications
+    INSERT INTO notification_received (notification_id, user_id)
+    SELECT v_notif_id, r.user_id
+        FROM recipients r
+    WHERE r.user_id IS NOT NULL
+    ON CONFLICT (notification_id, user_id) DO NOTHING;
+
+    RETURN NEW;
+END
+$BODY$
+LANGUAGE plpgsql;
+
+CREATE TRIGGER transaction_auto_notification
+    AFTER INSERT ON transaction
+    FOR EACH ROW
+    EXECUTE PROCEDURE transaction_auto_notification();
