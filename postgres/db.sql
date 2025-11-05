@@ -48,6 +48,13 @@ CREATE TABLE IF NOT EXISTS admin (
     password        TEXT NOT NULL
 );
 
+-- CATEGORY
+CREATE TABLE IF NOT EXISTS category (
+    id              SERIAL PRIMARY KEY,
+    name            TEXT NOT NULL UNIQUE
+);
+
+
 -- CAMPAIGN
 CREATE TABLE IF NOT EXISTS campaign (
     id              SERIAL PRIMARY KEY,
@@ -68,11 +75,6 @@ CREATE TABLE IF NOT EXISTS campaign (
     CHECK (end_date IS NULL OR close_date IS NULL OR end_date <= close_date)
 );
 
--- CATEGORY
-CREATE TABLE IF NOT EXISTS category (
-    id              SERIAL PRIMARY KEY,
-    name            TEXT NOT NULL UNIQUE
-);
 
 CREATE TABLE IF NOT EXISTS campaign_collaborator (
     campaign_id INTEGER NOT NULL REFERENCES campaign(id) ON DELETE CASCADE,
@@ -164,7 +166,7 @@ DECLARE
 BEGIN
     SELECT goal, funded
         INTO v_goal, v_funded
-        FROM campaign
+        FROM lbaw2545.campaign
     WHERE id = NEW.campaign_id
     FOR UPDATE;
 
@@ -172,7 +174,7 @@ BEGIN
         RAISE EXCEPTION 'This contribution would exceed the campaign goal.';
     END IF;
 
-    UPDATE campaign
+    UPDATE lbaw2545.campaign
         SET funded = funded + NEW.amount
     WHERE id = NEW.campaign_id;
 
@@ -208,7 +210,7 @@ $BODY$
 LANGUAGE plpgsql;
 
 CREATE TRIGGER campaign_state_from_funded
-    BEFORE UPDATE OF funded ON campaign
+    BEFORE UPDATE OF funded ON lbaw2545.campaign
     FOR EACH ROW
     EXECUTE PROCEDURE campaign_state_from_funded();
 
@@ -222,7 +224,7 @@ DECLARE
     v_state campaign_state;
 BEGIN
     IF NEW.author_id IS DISTINCT FROM OLD.author_id AND NEW.author_id IS NULL THEN
-        SELECT state INTO v_state FROM campaign WHERE id = NEW.campaign_id;
+        SELECT state INTO v_state FROM lbaw2545.campaign WHERE id = NEW.campaign_id;
         IF v_state <> 'completed' THEN NEW.is_valid := FALSE; END IF;
     END IF;
     RETURN NEW;
@@ -248,18 +250,18 @@ BEGIN
         -- add
         IF NEW.is_valid = TRUE THEN
             SELECT goal, funded INTO v_goal, v_funded
-            FROM campaign
+            FROM lbaw2545.campaign
             WHERE id = NEW.campaign_id
             FOR UPDATE;
             
             IF v_funded + NEW.amount > v_goal THEN RAISE EXCEPTION 'Re-validating this contribution would exceed the campaign goal.'; END IF;
 
-        UPDATE campaign SET funded = funded + NEW.amount WHERE id = NEW.campaign_id;
+        UPDATE lbaw2545.campaign SET funded = funded + NEW.amount WHERE id = NEW.campaign_id;
         END IF;
 
         -- sub
         IF NEW.is_valid = FALSE THEN
-        UPDATE campaign SET funded = funded - OLD.amount WHERE id = OLD.campaign_id;
+        UPDATE lbaw2545.campaign SET funded = funded - OLD.amount WHERE id = OLD.campaign_id;
         END IF;
 
     END IF;
@@ -269,7 +271,7 @@ $BODY$
 LANGUAGE plpgsql;
 
 CREATE TRIGGER transaction_validity_delta
-    AFTER UPDATE OF is_valid ON transaction
+    AFTER UPDATE ON lbaw2545.transaction
     FOR EACH ROW
     EXECUTE PROCEDURE transaction_validity_delta();
 
@@ -280,16 +282,16 @@ CREATE OR REPLACE FUNCTION campaign_suspend_if_no_owner() RETURNS TRIGGER AS
 $BODY$
 DECLARE
     v_has_collab  BOOLEAN;
-    v_campaign_id INTEGER := COALESCE(NEW.id, NEW.campaign_id, OLD.campaign_id);
+    v_campaign_id INTEGER := COALESCE(NEW.campaign_id, OLD.campaign_id);
 BEGIN
     SELECT EXISTS ( 
         SELECT 1
-        FROM campaign_collaborator
+        FROM lbaw2545.campaign_collaborator
         WHERE campaign_id = v_campaign_id )
     INTO v_has_collab;
 
     IF v_has_collab = FALSE THEN
-        UPDATE campaign SET state = 'suspended' WHERE id = v_campaign_id;
+        UPDATE lbaw2545.campaign SET state = 'suspended' WHERE id = v_campaign_id;
     END IF;
 
     RETURN COALESCE(NEW, OLD);
@@ -298,7 +300,7 @@ $BODY$
 LANGUAGE plpgsql;
 
 CREATE TRIGGER campaign_suspend_if_no_collab
-    AFTER DELETE ON campaign_collaborator
+    AFTER DELETE ON lbaw2545.campaign_collaborator
     FOR EACH ROW
     EXECUTE PROCEDURE campaign_suspend_if_no_owner();
 
@@ -315,7 +317,7 @@ DECLARE
 BEGIN
     -- campaign name 
     SELECT name INTO v_name
-    FROM campaign
+    FROM lbaw2545.campaign
     WHERE id = NEW.campaign_id;
     
     -- create the notification
@@ -327,14 +329,14 @@ BEGIN
     RETURNING id INTO v_notif_id;
 
     -- attach to the update
-    UPDATE campaign_update
+    UPDATE lbaw2545.campaign_update
         SET notification_id = v_notif_id
     WHERE id = NEW.id;
 
     -- send the notifications
     INSERT INTO notification_received(notification_id, user_id)
     SELECT v_notif_id, f.user_id
-        FROM campaign_follower f
+        FROM lbaw2545.campaign_follower f
     WHERE f.campaign_id = NEW.campaign_id AND f.user_id IS NOT NULL
     ON CONFLICT (notification_id, user_id) DO NOTHING;
 
@@ -344,7 +346,7 @@ $BODY$
 LANGUAGE plpgsql;
 
 CREATE TRIGGER campaign_update_auto_notification
-    AFTER INSERT ON campaign_update
+    AFTER INSERT ON lbaw2545.campaign_update
     FOR EACH ROW
     EXECUTE PROCEDURE campaign_update_auto_notification();
 
@@ -361,11 +363,11 @@ DECLARE
 BEGIN
     -- campaign name 
     SELECT name INTO v_name
-    FROM campaign
+    FROM lbaw2545.campaign
     WHERE id = NEW.campaign_id;
 
     -- create the notification
-    INSERT INTO notification(type, content, link)
+    INSERT INTO lbaw2545.notification(type, content, link)
     VALUES ( 'comment',
         CONCAT('New comment on campaign ', v_name),
         CONCAT('/campaigns/', NEW.campaign_id, '#comment-', NEW.id) -- might be changed in the future
@@ -373,23 +375,23 @@ BEGIN
     RETURNING id INTO v_notif_id;
 
     -- attach to the comment
-    UPDATE comment
+    UPDATE lbaw2545.comment
         SET notification_id = v_notif_id
     WHERE id = NEW.id;
 
    
     WITH recipients AS (
         SELECT cc.user_id
-            FROM campaign_collaborator cc
+            FROM lbaw2545.campaign_collaborator cc
             WHERE cc.campaign_id = NEW.campaign_id
         UNION
         SELECT p.author_id
-            FROM comment p
+            FROM lbaw2545.comment p
             WHERE NEW.parent_id IS NOT NULL AND p.id = NEW.parent_id
     )
 
      -- send the notifications
-    INSERT INTO notification_received (notification_id, user_id)
+    INSERT INTO lbaw2545.notification_received (notification_id, user_id)
     SELECT v_notif_id, r.user_id
         FROM recipients r
     WHERE r.user_id IS NOT NULL
@@ -418,31 +420,31 @@ DECLARE
 BEGIN
     -- campaign name
     SELECT name INTO v_name
-        FROM campaign
+        FROM lbaw2545.campaign
     WHERE id = NEW.campaign_id;
 
     -- create the notification
-    INSERT INTO notification(type, content, link)
+    INSERT INTO lbaw2545.notification(type, content, link)
     VALUES ('transaction',
         CONCAT('New contribution to campaign ', v_name),
-        CONCAT('/campaigns/', NEW.campaign_id, '#transaction-', NEW.id)
+        CONCAT('/campaigns/', NEW.campaign_id, '#transaction-', NEW.id) -- might be changed in the future
     )
     RETURNING id INTO v_notif_id;
 
     -- attach to the transaction
-    UPDATE transaction
+    UPDATE lbaw2545.transaction
         SET notification_id = v_notif_id
     WHERE id = NEW.id;
 
 
     WITH recipients AS (
         SELECT cc.user_id
-            FROM campaign_collaborator cc
+            FROM lbaw2545.campaign_collaborator cc
         WHERE cc.campaign_id = NEW.campaign_id
     )
 
     -- send the notifications
-    INSERT INTO notification_received (notification_id, user_id)
+    INSERT INTO lbaw2545.notification_received (notification_id, user_id)
     SELECT v_notif_id, r.user_id
         FROM recipients r
     WHERE r.user_id IS NOT NULL
@@ -457,3 +459,4 @@ CREATE TRIGGER transaction_auto_notification
     AFTER INSERT ON transaction
     FOR EACH ROW
     EXECUTE PROCEDURE transaction_auto_notification();
+
