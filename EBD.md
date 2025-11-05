@@ -8,6 +8,12 @@ The goal of this artifact is to define and represent the key entities and relati
 
 ## A5 : Relational Schema
 
+This artifact contains the Relational Schema obtained by the mapping from the Conceptual Data Model in agreement with the BCNF.
+
+### 1. Relational Schema
+
+The following schema is the convertion from the UML already in the BCNF.
+
 | ID | Relation |
 |----|----------|
 | R01 | user_account(<ins>id</ins>, email UK NN, name NN, password NN, join_date NN DF Today, profile_picture) |
@@ -21,145 +27,147 @@ The goal of this artifact is to define and represent the key entities and relati
 | R09 | category(<ins>id</ins>, name UK NN) |
 | R10 | update(<ins>id</ins>, content NN, datetime NN, campaign -\> campaign.id NN) |
 | R11 | resource(<ins>id</ins>, name NN, path NN, order NN, campaign -\> campaign.id, update -\> update.id) |
-| R12 | notification(<ins>id</ins>, content NN, is_read NN, datetime NN DF Today) |
+| R12 | notification(<ins>id</ins>, content NN, link NN, type NN, datetime NN DF Today) |
 | R13 | notification_of_update(<ins>id</ins> -\> notification.id, update -\> update.id NN) |
 | R14 | notification_of_comment(<ins>id</ins> -\> notification.id, comment -\> comment.id NN) |
 | R15 | notification_of_transaction(<ins>id</ins> -\> notification.id, transaction -\> transaction.id NN) |
 | R16 | owner(<ins>user</ins> -\> user.id, <ins>campaign</ins> -\> campaign.id NN) |
 | R17 | follow(<ins>user</ins> -\> user.id NN, <ins>campaign</ins> -\> campaign.id NN) |
+| R18 | user_notification(<ins>user</ins> -\> user.id NN, <ins>notification</ins> -\> notification.id NN, is_read NN DF FALSE, snooze_until) |
 
 UK = Unique Key
 NN = Not Null
 CK = Check
 DF = Default
 
-### Domains
+### 2. Domains
 
-Today: DATE DEFAULT CURRENT_DATE
-States: ENUM (‘unfunded’, ‘ongoing’, ‘completed’, ‘paused’, ‘suspended’)
+The Domains needed in our database are the following 
 
-### Schema Validation
+| Domain Name | Domain Specification |
+| ----------- | -------------------- |
+| Today | DATE DEFAULT CURRENT_DATE |
+| State |  ENUM (‘unfunded’, ‘ongoing’, ‘completed’, ‘paused’, ‘suspended’) |
+| Type |  ENUM ('update', 'transaction', 'comment')|
 
-**R01 – user_account**  
-- **Keys:**  
-  - `{id}`  
-- **Functional Dependencies:**  
-  - `FD0101a: {id} → {email, name, password, join_date, profile_picture}`  
-  - `FD0101b: {email} → {id, name, password, join_date, profile_picture}`  
-  
 
-**R02 – campaign**  
-- **Keys:**  
-  - `{id}`  
-- **Functional Dependencies:**  
-  - `FD0102: {id} → {name, description, funded, goal, start_date, close_date, end_date, state, creator, category}`  
+### 3. Schema Validation
+
+Ensures each table’s attributes are uniquely determined by its keys, validating data integrity, preventing redundancy, and confirming the schema follows BCNF normalization.
+
+| TABLE R01 | user_account |
+| ----------|--------------|
+| Keys | {id}, {email} |
+|Functional Dependencies: | |
+| FD0101a | {id} → {email, name, password, join_date, profile_picture} |
+|  FD0101b |{email} → {id, name, password, join_date, profile_picture} |
+
+| TABLE R02 | campaign |
+| ----------|--------------|
+| Keys | {id} |
+|Functional Dependencies: | |
+| FD0102 | {id} → {name, description, funded, goal, start_date, close_date, end_date, state, creator, category} |
+
+| TABLE R03 | admin |
+| ----------|--------------|
+| Keys | {id}, {email} |
+|Functional Dependencies: | |
+| FD0103a | {id} → {email, password} |
+| FD0103b | {email} → {id, password} |
  
+| TABLE R04 | oauth_account |
+| ----------|--------------|
+| Keys | {id}, {provider,provider_user_id} |
+|Functional Dependencies: | |
+| FD0104a | {id} → {provider, provider_email, provider_user_id, avatar_url, access_token, refresh_token, token_expires_at, user} |
+| FD0104b | {provider,provider_user_id} → {id, provider_email, avatar_url, access_token, refresh_token, token_expires_at, user} |
 
-**R03 – admin**  
-- **Keys:**  
-  - `{id}`  
-- **Functional Dependencies:**  
-  - `FD0103a: {id} → {email, password}`  
-  - `FD0103b: {email} → {id, password}`  
- 
+| TABLE R05 | blocked_user|
+|-----------|-------------|
+| Keys      | {id} |
+|Functional Dependencies: | |
+| FD0105| {id} → {datetime, reason}|
 
-**R04 – oauth_account**  
-- **Keys:**  
-  - `{id}`  
-- **Functional Dependencies:**  
-  - `FD0104: {id} → {provider, provider_email, provider_user_id, avatar_url, access_token, refresh_token, token_expires_at, user}`  
+| TABLE R06 | appeal|
+|-----------|-------------|
+| Keys      | {id}        |
+|Functional Dependencies: | |
+| FD0106 | {id} → {block, whining, datetime}|
 
+| TABLE R07 | comment |
+|-----------|-------------|
+| Keys      | {id}        |
+|Functional Dependencies: | |
+| FD0107: {id} → {content, datetime, author, campaign, parent}|
 
-**R05 – blocked_user**  
-- **Keys:**  
-  - `{id}`  
-- **Functional Dependencies:**  
-  - `FD0105: {id} → {datetime, reason}`  
- 
+| TABLE R08 | transaction |
+|-----------|-------------|
+| Keys      | {id}        |
+|Functional Dependencies: | |
+| FD0108 | {id} → {datetime, amount, is_valid, author, campaign}|
 
-**R06 – appeal**  
-- **Keys:**  
-  - `{id}`  
-- **Functional Dependencies:**  
-  - `FD0106: {id} → {block, whining, datetime}`  
- 
+| TABLE R09 | category |
+| --------| -----------|
+| Keys    | {id},{name} |
+|Functional Dependencies: | |
+| FD0109a | {id} → {name} |
+| FD0109b | {name} → {id}|
 
-**R07 – comment**  
-- **Keys:**  
-  - `{id}`  
-- **Functional Dependencies:**  
-  - `FD0107: {id} → {content, datetime, author, campaign, parent}`  
+| TABLE R10 | update |
+| --------| -----------|
+| Keys    | {id} |
+|Functional Dependencies: | |
+| FD0110  |{id} → {content, datetime, campaign}|
 
+| TABLE R11 | resource |
+| --------| -----------|
+| Keys    | {id}, {location} |
+|Functional Dependencies: | |
+| FD0111a | {id} → {name, location, order, campaign, update}|
+| FD0111b | {location} → {id,name, order, campaign, update}|
 
-**R08 – transaction**  
-- **Keys:**  
-  - `{id}`  
-- **Functional Dependencies:**  
-  - `FD0108: {id} → {datetime, amount, is_valid, author, campaign}`  
+| TABLE R12 | notification |
+| --------| -----------|
+| Keys    | {id} |
+|Functional Dependencies: | |
+| FD0112 | {id} → {content, link, type, datetime}|
 
+| TABLE R13 | notification_of_update |
+| --------| -----------|
+| Keys    | {id} |
+|Functional Dependencies: | |
+| FD0113 | {id} → {update}|
 
-**R09 – category**  
-- **Keys:**  
-  - `{id}`, `{name}`  
-- **Functional Dependencies:**  
-  - `FD0109a: {id} → {name}`  
-  - `FD0109b: {name} → {id}`  
- 
+| TABLE R14 | notification_of_comment |
+| --------| -----------|
+| Keys    | {id} |
+|Functional Dependencies: | |
+| FD0114 | {id} → {comment}|
+   
+| TABLE R15 | notification_of_transaction |
+| --------| -----------|
+| Keys    | {id} |
+|Functional Dependencies: | |
+| FD0115 | {id} → {transaction}|
 
-**R10 – update**  
-- **Keys:**  
-  - `{id}`  
-- **Functional Dependencies:**  
-  - `FD0110: {id} → {content, datetime, campaign}`  
+| TABLE R16 | owner |
+| --------| -----------|
+| Keys    | {user, campaign} |
+|Functional Dependencies: | |
+| FD0116 | {user, campaign} → ∅|
 
-
-**R11 – resource**  
-- **Keys:**  
-  - `{id}`  
-- **Functional Dependencies:**  
-  - `FD0111: {id} → {name, location, order, campaign, update}`  
-
-
-**R12 – notification**  
-- **Keys:**  
-  - `{id}`  
-- **Functional Dependencies:**  
-  - `FD0112: {id} → {text, is_read, datetime}`  
-
-
-**R13 – notification_of_update**  
-- **Keys:**  
-  - `{id}`  
-- **Functional Dependencies:**  
-  - `FD0113: {id} → {update}`  
- 
-
-**R14 – notification_of_comment**  
-- **Keys:**  
-  - `{id}`  
-- **Functional Dependencies:**  
-  - `FD0114: {id} → {comment}`  
- 
-
-**R15 – notification_of_transaction**  
-- **Keys:**  
-  - `{id}`  
-- **Functional Dependencies:**  
-  - `FD0115: {id} → {transaction}`  
+| TABLE R17 | follow |
+| --------| -----------|
+| Keys    | {user, campaign} |
+|Functional Dependencies: | |
+| FD0117 | {user, campaign} → ∅|
 
 
-**R16 – owner**  
-- **Keys:**  
-  - `{user, campaign}`  
-- **Functional Dependencies:**  
-  - `FD0116: {user, campaign} → ∅`  
- 
-
-**R17 – follow**  
-- **Keys:**  
-  - `{user, campaign}`  
-- **Functional Dependencies:**  
-  - `FD0117: {user, campaign} → ∅`  
+| TABLE 18 | user_notification |
+| -------- | ----------------- |
+| Keys    | {user, notification} |
+| Functional Dependencies:| |
+| FD0118 | {user, notification} -> {is_read, snooze_until} |
 
 
 ## A6 : Indexes, Integrity and Populated Database
