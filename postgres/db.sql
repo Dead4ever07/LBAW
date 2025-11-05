@@ -156,8 +156,8 @@ CREATE TABLE IF NOT EXISTS resource (
 --TRIGGERS
 
 -- TRIGGER01
--- Nova transação → aumentar funded da campanha
--- guarda: NUNCA deixar funded ultrapassar goal
+-- New transaction: increase campaign funded
+-- dont alow it to go over campaign goal
 CREATE OR REPLACE FUNCTION transaction_add_to_funded() RETURNS TRIGGER AS
 $BODY$
 DECLARE
@@ -184,13 +184,13 @@ $BODY$
 LANGUAGE plpgsql;
 
 CREATE TRIGGER transaction_add_to_funded
-    AFTER INSERT ON transaction
+    AFTER INSERT ON lbaw2545.transaction
     FOR EACH ROW
     EXECUTE PROCEDURE transaction_add_to_funded();
 
 
 -- TRIGGER02
--- Quando campaign.funded é atualizado:
+-- campaign.funded updated:
 --   funded = 0: state = 'unfunded'
 --   funded = goal: state = 'completed'
 --   funded ≠ 0 && funded ≠ goal: state = 'ongoing'
@@ -198,6 +198,7 @@ CREATE OR REPLACE FUNCTION campaign_state_from_funded() RETURNS TRIGGER AS
 $BODY$
 BEGIN
     IF TG_OP = 'UPDATE' AND NEW.funded IS NOT DISTINCT FROM OLD.funded THEN RETURN NEW; END IF;
+    IF OLD.state IN ('paused','suspended') OR NEW.state IN ('paused','suspended') THEN RETURN NEW; END IF;
 
     IF NEW.funded = 0 THEN NEW.state := 'unfunded';
     ELSIF NEW.funded = NEW.goal THEN NEW.state := 'completed';
@@ -216,8 +217,8 @@ CREATE TRIGGER campaign_state_from_funded
 
 
 -- TRIGGER03
--- Se o autor da transação passa a NULL
--- e a campanha não está 'completed', a transação torna-se inválida.
+-- If the author of a transaction becomes NULL
+-- and the campaign is not 'completed', the transaction becomes invalid.
 CREATE OR REPLACE FUNCTION transaction_author_null_invalidate() RETURNS TRIGGER AS
 $BODY$
 DECLARE
@@ -233,13 +234,13 @@ $BODY$
 LANGUAGE plpgsql;
 
 CREATE TRIGGER transaction_author_null_invalidate
-    BEFORE UPDATE OF author_id ON transaction
+    BEFORE UPDATE OF author_id ON lbaw2545.transaction
     FOR EACH ROW
     EXECUTE PROCEDURE transaction_author_null_invalidate();
 
 
--- TRIGGER4
--- Quando is_valid muda: atualizar funded da campanha (+amount ou -amount)
+-- TRIGGER04
+-- is_valid updated: change campaign funded(+amount or -amount)
 CREATE OR REPLACE FUNCTION transaction_validity_delta() RETURNS TRIGGER AS
 $BODY$
 DECLARE
@@ -276,8 +277,8 @@ CREATE TRIGGER transaction_validity_delta
     EXECUTE PROCEDURE transaction_validity_delta();
 
 
--- TRIGGER5
--- Se uma campanha ficar sem dono (sem creator_id e sem colaboradores) fica 'suspended'
+-- TRIGGER05
+-- If a campaign has no collaborators, set state = 'suspended'
 CREATE OR REPLACE FUNCTION campaign_suspend_if_no_owner() RETURNS TRIGGER AS
 $BODY$
 DECLARE
@@ -308,7 +309,6 @@ CREATE TRIGGER campaign_suspend_if_no_collab
 -- TRIGGER06
 -- INSERT on campaign_update: create notification(type='update')
 -- deliver to: all followers of that campaign
-
 CREATE OR REPLACE FUNCTION campaign_update_auto_notification() RETURNS TRIGGER AS
 $BODY$
 DECLARE
@@ -321,7 +321,7 @@ BEGIN
     WHERE id = NEW.campaign_id;
     
     -- create the notification
-    INSERT INTO notification(type, content, link)
+    INSERT INTO lbaw2545.notification(type, content, link)
     VALUES ('update',
         CONCAT('New update on campaign ', v_name),
         CONCAT('/campaigns/', NEW.campaign_id, '#update-', NEW.id) -- might be changed in the future
@@ -334,7 +334,7 @@ BEGIN
     WHERE id = NEW.id;
 
     -- send the notifications
-    INSERT INTO notification_received(notification_id, user_id)
+    INSERT INTO lbaw2545.notification_received(notification_id, user_id)
     SELECT v_notif_id, f.user_id
         FROM lbaw2545.campaign_follower f
     WHERE f.campaign_id = NEW.campaign_id AND f.user_id IS NOT NULL
@@ -354,7 +354,6 @@ CREATE TRIGGER campaign_update_auto_notification
 -- TRIGGER07
 -- INSERT on comment: create notification(type='comment')
 -- deliver to: campaign collaborators and parent comment author
-
 CREATE OR REPLACE FUNCTION comment_auto_notification() RETURNS TRIGGER AS
 $BODY$
 DECLARE
@@ -404,7 +403,7 @@ $BODY$
 LANGUAGE plpgsql;
 
 CREATE TRIGGER comment_auto_notification
-    AFTER INSERT ON comment
+    AFTER INSERT ON lbaw2545.comment
     FOR EACH ROW
     EXECUTE PROCEDURE comment_auto_notification();
 
@@ -456,7 +455,36 @@ $BODY$
 LANGUAGE plpgsql;
 
 CREATE TRIGGER transaction_auto_notification
-    AFTER INSERT ON transaction
+    AFTER INSERT ON lbaw2545.transaction
     FOR EACH ROW
     EXECUTE PROCEDURE transaction_auto_notification();
 
+
+
+-- TRIGGER09:
+-- A user listed as a collaborator of a campaign cannot donate to that campaign.
+CREATE OR REPLACE FUNCTION forbid_self_donation() RETURNS TRIGGER AS
+$body$
+DECLARE
+    v_is_collab BOOLEAN;
+BEGIN
+    -- If no author skip.
+    IF NEW.author_id IS NULL THEN RETURN NEW; END IF;
+
+    SELECT EXISTS (
+        SELECT 1
+        FROM lbaw2545.campaign_collaborator cc
+        WHERE cc.campaign_id = NEW.campaign_id AND cc.user_id = NEW.author_id
+    ) INTO v_is_collab;
+
+    IF v_is_collab THEN RAISE EXCEPTION 'You cannot donate to your own campaign.'; END IF;
+
+    RETURN NEW;
+END
+$body$
+LANGUAGE plpgsql;
+
+CREATE TRIGGER forbid_self_donation
+    BEFORE INSERT ON lbaw2545.transaction
+    FOR EACH ROW
+    EXECUTE PROCEDURE forbid_self_donation();
