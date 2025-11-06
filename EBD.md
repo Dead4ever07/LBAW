@@ -29,21 +29,21 @@ This artifact contains the Relational Schema obtained from mapping the Conceptua
 
 | ID | Relation |
 |----|----------|
-| R01 | user_account(<ins>id</ins>, email UK NN, name NN, password NN, join_date NN DF Today, profile_picture) |
-| R02 | campaign(<ins>id</ins>, name NN, description NN, goal NN, funded DF 0 NN CK funded \<= goal, start_date NN DF Today, close_date CK (close_date IS NULL OR close_date \>= start_date), end_date CK (end_date IS NULL OR (end_date \>= start_date AND (close_date IS NULL OR close_date \>= end_date))), state NN CK state IN States, creator_id -\> user.id, category_id NN -\> category.id) |
+| R01 | user_account(<ins>id</ins>, email UK NN, name NN, password NN, created_at NN DF Today, profile_picture) |
+| R02 | campaign(<ins>id</ins>, name NN, description NN, goal NN, funded DF 0 NN CK funded \<= goal, start_date NN DF Today, close_date CK (close_date IS NULL OR close_date \>= start_date), end_date CK (end_date IS NULL OR (end_date \>= start_date AND (close_date IS NULL OR close_date \>= end_date))), state NN CK state IN States, category_id NN -\> category.id) |
 | R03 | admin(<ins>id</ins>, email UK NN, password NN) |
 | R04 | oauth_account(<ins>id</ins>, provider, provider_email NN, provider_user_id NN, avatar_url, access_token, refresh_token, token_expires_at, user -\> user.id) |
 | R05 | blocked_user(<ins>id</ins> -\> user.id, datetime NN, reason NN) |
 | R06 | appeal(<ins>id</ins>, block -\> blocked_user.id, whining NN, datetime NN) |
-| R07 | comment(<ins>id</ins>, content NN, datetime NN, author -\> user.id, campaign -\> campaign.id NN, parent -\> comment.id, notification -\> notification.id NN) |
-| R08 | transaction(<ins>id</ins>, datetime NN, amount NN CK \> 0, is_valid NN DF TRUE, author -\> user.id, campaign -\> campaign.id NN, notification -\> notification.id NN) |
+| R07 | comment(<ins>id</ins>, content NN, datetime NN, author -\> user.id, campaign -\> campaign.id NN, parent -\> comment.id, notification -\> notification.id UK NN) |
+| R08 | transaction(<ins>id</ins>, datetime NN, amount NN CK \> 0, is_valid NN DF TRUE, author -\> user.id, campaign -\> campaign.id NN, notification -\> notification.id UK NN) |
 | R09 | category(<ins>id</ins>, name UK NN) |
-| R10 | update(<ins>id</ins>, content NN, datetime NN DF Today, campaign -\> campaign.id NN, notification -\> notification.id) |
-| R11 | resource(<ins>id</ins>, name NN, path NN, order NN, campaign -\> campaign.id, update -\> update.id NN) |
+| R10 | campaign_update(<ins>id</ins>, content NN, datetime NN DF Today, campaign -\> campaign.id NN, notification -\> notification.id UK NN) |
+| R11 | resource(<ins>id</ins>, name NN, path UK NN, order NN, campaign -\> campaign.id, update -\> campaign_update.id NN) |
 | R12 | notification(<ins>id</ins>, content NN, link NN, type NN, datetime NN DF Today) |
-| R13 | owner(<ins>user</ins> -\> user.id, <ins>campaign</ins> -\> campaign.id NN) |
-| R14 | follow(<ins>user</ins> -\> user.id NN, <ins>campaign</ins> -\> campaign.id NN) |
-| R15 | user_notification(<ins>user</ins> -\> user.id NN, <ins>notification</ins> -\> notification.id NN, is_read NN DF FALSE, snooze_until) |
+| R13 | campaign_collaborator(<ins>user</ins> -\> user.id, <ins>campaign</ins> -\> campaign.id NN) |
+| R14 | campaign_follower(<ins>user</ins> -\> user.id NN, <ins>campaign</ins> -\> campaign.id NN) |
+| R15 | notification_recived(<ins>user</ins> -\> user.id NN, <ins>notification</ins> -\> notification.id NN, is_read NN DF FALSE, snooze_until) |
 
 UK = Unique Key
 NN = Not Null
@@ -70,14 +70,14 @@ Ensures each table’s attributes are uniquely determined by its keys, validatin
 | ------------|-------------|
 | Keys | {id}, {email} |
 |Functional Dependencies: | |
-| FD0101a | {id} → {email, name, password, join_date, profile_picture} |
-|  FD0101b |{email} → {id, name, password, join_date, profile_picture} |
+| FD0101a | {id} → {email, name, password, created_at, profile_picture} |
+|  FD0101b |{email} → {id, name, password, created_at, profile_picture} |
 
 | TABLE R02 | campaign |
 | ----------|--------------|
 | Keys | {id} |
 |Functional Dependencies: | |
-| FD0102 | {id} → {name, description, funded, goal, start_date, close_date, end_date, state, creator, category} |
+| FD0102 | {id} → {name, description, funded, goal, start_date, close_date, end_date, state, category} |
 
 | TABLE R03 | admin |
 | ----------|--------------|
@@ -128,7 +128,7 @@ Ensures each table’s attributes are uniquely determined by its keys, validatin
 | FD0109a | {id} → {name} |
 | FD0109b | {name} → {id}|
 
-| TABLE R10 | update |
+| TABLE R10 | campaign_update |
 | --------| -----------|
 | Keys    | {id},{notification} |
 |Functional Dependencies: | |
@@ -138,10 +138,10 @@ Ensures each table’s attributes are uniquely determined by its keys, validatin
 
 | TABLE R11 | resource |
 | --------| -----------|
-| Keys    | {id}, {location} |
+| Keys    | {id}, {path} |
 |Functional Dependencies: | |
-| FD0111a | {id} → {name, location, order, campaign, update}|
-| FD0111b | {location} → {id,name, order, campaign, update}|
+| FD0111a | {id} → {name, path, order, campaign, campaign_update}|
+| FD0111b | {path} → {id,name, order, campaign, campaign_update}|
 
 | TABLE R12 | notification |
 | --------| -----------|
@@ -149,24 +149,30 @@ Ensures each table’s attributes are uniquely determined by its keys, validatin
 |Functional Dependencies: | |
 | FD0112 | {id} → {content, link, type, datetime}|
 
-| TABLE R13 | owner |
+| TABLE R13 | campaign_collaborator |
 | --------| -----------|
 | Keys    | {user, campaign} |
 |Functional Dependencies: | |
 | FD0116 | {user, campaign} → ∅|
 
-| TABLE R14 | follow |
+| TABLE R14 | campaign_follower |
 | --------| -----------|
 | Keys    | {user, campaign} |
 |Functional Dependencies: | |
 | FD0117 | {user, campaign} → ∅|
 
 
-| TABLE 15 | user_notification |
+| TABLE 15 | notification_recived |
 | -------- | ----------------- |
 | Keys    | {user, notification} |
 | Functional Dependencies:| |
 | FD0118 | {user, notification} -> {is_read, snooze_until} |
+
+
+#### Generalization Mapping Justification
+
+In our UML the class generalization were first mapped using class table inheritance, and the resulting child subclasses only had the foreign keys to the class notification or to one of the classes (campaign_update, comment, transaction). After that because the connection was 1 .. 1 between the classes(campaign_update, comment, transaction) and the child subclasses that connection was reduced to a single foreign key pointing to the notification class using the merge tables into a single table.
+
 
 ## A6 : Indexes, Integrity and Populated Database
 
