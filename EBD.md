@@ -494,3 +494,54 @@ ON lbaw2545.campaign USING GIN (search_text gin_trgm_ops);</code></pre>
   </td>
   </tr>
 </table>
+
+
+
+
+
+
+<table> <tr> <th>Transaction</th> <th>TRAN01</th> </tr> <tr> <td>Description</td> <td> Deletes a user account while anonymizing shared content (comments and transactions) and ensuring campaign state is updated consistently if ownership changes. </td> </tr> <tr> <td>Justification</td> <td> Deleting a user affects multiple relations: user_account, oauth_account, comment, transaction, campaign_collaborator, and campaign. If the transaction is not atomic, partial deletion could leave the database inconsistent (e.g., campaign_collaborator removed but user still exists, or vice-versa). <br> SERIALIZABLE guarantees no concurrent updates create phantom collaborators or transactions during deletion. </td> </tr> <tr> <td>Isolation level</td> <td><b>SERIALIZABLE</b></td> </tr> <tr> <td colspan="2"><b>SQL Code</b></td> </tr> <tr> <td colspan="2"> <pre><code>BEGIN TRANSACTION; SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+
+-- Anonymize comments
+UPDATE comment
+SET author_id = NULL
+WHERE author_id = $USER_ID;
+
+-- Anonymize transactions and invalidate if needed
+UPDATE transaction
+SET author_id = NULL
+WHERE author_id = $USER_ID;
+
+-- Remove user as collaborator
+DELETE FROM campaign_collaborator
+WHERE user_id = $USER_ID;
+
+-- Delete OAuth accounts (CASCADE)
+DELETE FROM oauth_account
+WHERE user_id = $USER_ID;
+
+-- Finally delete user
+DELETE FROM user_account
+WHERE id = $USER_ID;
+
+END TRANSACTION;
+</code></pre>
+</td>
+
+</tr> </table>
+
+<table> <tr> <th>Transaction</th> <th>TRAN02</th> </tr> <tr> <td>Description</td> <td> Inserts a new donation while ensuring the campaign allows contributions, the user is not a collaborator, and the transaction remains consistent. </td> </tr> <tr> <td>Justification</td> <td> Although triggers enforce some rules, the application must still check campaign eligibility and owner restrictions. Using a transaction ensures that the validation + insert + trigger cascade all succeed atomically. <br> REPEATABLE READ prevents campaign state from changing concurrently between validation and insertion. </td> </tr> <tr> <td>Isolation level</td> <td><b>REPEATABLE READ</b></td> </tr> <tr> <td colspan="2"><b>SQL Code</b></td> </tr> <tr> <td colspan="2"> <pre><code>BEGIN TRANSACTION; SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+
+-- Check campaign state
+SELECT state
+FROM campaign
+WHERE id = $CAMPAIGN_ID
+FOR SHARE;
+
+-- Insert transaction
+INSERT INTO transaction (campaign_id, author_id, amount)
+VALUES ($CAMPAIGN_ID, $USER_ID, $AMOUNT);
+
+END TRANSACTION;
+</code></pre>
+</td>
