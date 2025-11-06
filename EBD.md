@@ -488,3 +488,403 @@ ON lbaw2545.campaign USING GIN (search_text gin_trgm_ops);</code></pre>
   </td>
   </tr>
 </table>
+
+### 3 Triggers
+
+<table>
+  <tr> <th>Trigger</th> <th>TRIGGER01</th> </tr>
+  <tr> <td>Description </td> <td>On each new contribution, add <code>NEW.amount</code> to the associated campaign’s <code>funded</code> total. If this would exceed the campaign’s <code>goal</code>, abort the insert with an error.</td> </tr>
+  <tr> <td>Justification </td> <td>Ensures financial integrity by keeping each campaign’s total funding accurate and within its defined goal, preventing overfunding and maintaining consistent campaign progress data across all transactions.</td></tr>
+  <tr> <td colspan="2"><b>SQL Code</b></td> </tr>
+  <tr>
+    <td colspan="2">
+      <pre><code>CREATE OR REPLACE FUNCTION transaction_add_to_funded() RETURNS TRIGGER AS
+$BODY$
+DECLARE
+  v_goal   NUMERIC;
+  v_funded NUMERIC;
+BEGIN
+    SELECT goal, funded
+        INTO v_goal, v_funded
+        FROM lbaw2545.campaign
+    WHERE id = NEW.campaign_id
+    FOR UPDATE;
+    IF v_funded + NEW.amount > v_goal THEN
+        RAISE EXCEPTION 'This contribution would exceed the campaign goal.';
+    END IF;
+    UPDATE lbaw2545.campaign
+        SET funded = funded + NEW.amount
+    WHERE id = NEW.campaign_id;
+    RETURN NEW;
+END
+$BODY$
+LANGUAGE plpgsql;
+
+CREATE TRIGGER transaction_add_to_funded
+    AFTER INSERT ON lbaw2545.transaction
+    FOR EACH ROW
+    EXECUTE PROCEDURE transaction_add_to_funded();
+</code></pre>
+    </td>
+  </tr>
+</table>
+
+
+<table>
+  <tr> <th>Trigger</th> <th>TRIGGER02</th> </tr>
+  <tr> <td>Description </td> <td>Automatically updates a campaign’s <code>state</code> based on its <code>funded</code> amount whenever that value changes. If funded = 0, the state becomes unfunded; if funded = goal, the state becomes completed; otherwise, it is set to ongoing. The trigger ignores updates when the campaign is paused or suspended.</td> </tr>
+  <tr> <td>Justification </td> <td>Maintains logical consistency between a campaign’s funding progress and its current state, ensuring that state transitions occur automatically based on financial milestones rather than manual updates.</td></tr>
+  <tr> <td colspan="2"><b>SQL Code</b></td> </tr>
+  <tr>
+    <td colspan="2">
+      <pre><code>CREATE OR REPLACE FUNCTION campaign_state_from_funded() RETURNS TRIGGER AS
+$BODY$
+BEGIN
+    IF TG_OP = 'UPDATE' AND NEW.funded IS NOT DISTINCT FROM OLD.funded THEN RETURN NEW; END IF;
+    IF OLD.state IN ('paused','suspended') OR NEW.state IN ('paused','suspended') THEN RETURN NEW; END IF;
+    IF NEW.funded = 0 THEN NEW.state := 'unfunded';
+    ELSIF NEW.funded = NEW.goal THEN NEW.state := 'completed';
+    ELSE NEW.state := 'ongoing';
+    END IF;
+    RETURN NEW;
+END
+$BODY$
+LANGUAGE plpgsql;
+
+CREATE TRIGGER campaign_state_from_funded
+    BEFORE UPDATE OF funded ON lbaw2545.campaign
+    FOR EACH ROW
+    EXECUTE PROCEDURE campaign_state_from_funded();
+</code></pre>
+    </td>
+  </tr>
+</table>
+
+
+<table>
+  <tr> <th>Trigger</th> <th>TRIGGER03</th> </tr>
+  <tr> <td>Description </td> <td>When a transaction’s <code>author_id</code> is updated from a non-NULL value to <code>NULL</code>, the trigger checks the related campaign’s <code>state</code>. If the campaign is not <code>'completed'</code>, it automatically marks the transaction as invalid by setting <code>is_valid = FALSE</code>.</td> </tr>
+  <tr> <td>Justification </td> <td>Preserves data validity by preventing active campaigns from containing ownerless transactions. Ensures that only completed campaigns may retain transactions without an associated author, maintaining accountability and data consistency.</td></tr>
+  <tr> <td colspan="2"><b>SQL Code</b></td> </tr>
+  <tr>
+    <td colspan="2">
+      <pre><code>CREATE OR REPLACE FUNCTION transaction_author_null_invalidate() RETURNS TRIGGER AS
+$BODY$
+DECLARE
+    v_state campaign_state;
+BEGIN
+    IF NEW.author_id IS DISTINCT FROM OLD.author_id AND NEW.author_id IS NULL THEN
+        SELECT state INTO v_state FROM lbaw2545.campaign WHERE id = NEW.campaign_id;
+        IF v_state <> 'completed' THEN NEW.is_valid := FALSE; END IF;
+    END IF;
+    RETURN NEW;
+END
+$BODY$
+LANGUAGE plpgsql;
+
+CREATE TRIGGER transaction_author_null_invalidate
+    BEFORE UPDATE OF author_id ON lbaw2545.transaction
+    FOR EACH ROW
+    EXECUTE PROCEDURE transaction_author_null_invalidate();</code></pre>
+    </td>
+  </tr>
+</table>
+
+<table>
+  <tr> <th>Trigger</th> <th>TRIGGER04</th> </tr>
+  <tr> <td>Description </td> <td>On updates to a transaction, if <code>is_valid</code> changes, adjust the related campaign’s <code>funded</code> total accordingly: when it flips to <code>TRUE</code>, add <code>NEW.amount</code> (first locking the campaign row and aborting if this would exceed <code>goal</code>); when it flips to <code>FALSE</code>, subtract <code>OLD.amount</code>.</td> </tr>
+  <tr> <td>Justification </td> <td>Ensures the campaign’s displayed total is accurate by automatically adding or subtracting a transaction’s amount whenever its <code>is_valid</code> flag changes, keeping <code>funded</code> perfectly aligned with only valid contributions.</td></tr>
+  <tr> <td colspan="2"><b>SQL Code</b></td> </tr>
+  <tr>
+    <td colspan="2">
+      <pre><code>CREATE OR REPLACE FUNCTION transaction_validity_delta() RETURNS TRIGGER AS
+$BODY$
+DECLARE
+  v_goal   NUMERIC;
+  v_funded NUMERIC;
+BEGIN
+    IF NEW.is_valid IS DISTINCT FROM OLD.is_valid THEN
+        -- add
+        IF NEW.is_valid = TRUE THEN
+            SELECT goal, funded INTO v_goal, v_funded
+            FROM lbaw2545.campaign
+            WHERE id = NEW.campaign_id
+            FOR UPDATE;
+            IF v_funded + NEW.amount > v_goal THEN 
+              RAISE EXCEPTION 'Re-validating this contribution would exceed the campaign goal.'; 
+            END IF;
+        UPDATE lbaw2545.campaign SET funded = funded + NEW.amount WHERE id = NEW.campaign_id;
+        END IF;
+        -- sub
+        IF NEW.is_valid = FALSE THEN
+        UPDATE lbaw2545.campaign SET funded = funded - OLD.amount WHERE id = OLD.campaign_id;
+        END IF;
+    END IF;
+    RETURN NEW;
+END
+$BODY$
+LANGUAGE plpgsql;
+
+CREATE TRIGGER transaction_validity_delta
+    AFTER UPDATE ON lbaw2545.transaction
+    FOR EACH ROW
+    EXECUTE PROCEDURE transaction_validity_delta();</code></pre>
+    </td>
+  </tr>
+</table>
+
+
+<table>
+  <tr> <th>Trigger</th> <th>TRIGGER05</th> </tr>
+  <tr> <td>Description </td> <td>After a collaborator is removed, this trigger checks whether the campaign still has any collaborators. If none remain, it automatically updates the campaign’s <code>state</code> to <code>'suspended'</code>, ensuring campaigns without an collaborators are not left active.</td> </tr>
+  <tr> <td>Justification </td> <td>Enforces the business rule that an active campaign must have at least one responsible collaborator/owner. By suspending ownerless campaigns, it prevents orphaned or unmanaged campaigns from remaining active</td></tr>
+  <tr> <td colspan="2"><b>SQL Code</b></td> </tr>
+  <tr>
+    <td colspan="2">
+      <pre><code>CREATE OR REPLACE FUNCTION campaign_suspend_if_no_owner() RETURNS TRIGGER AS
+$BODY$
+DECLARE
+    v_has_collab  BOOLEAN;
+    v_campaign_id INTEGER := COALESCE(NEW.campaign_id, OLD.campaign_id);
+BEGIN
+    SELECT EXISTS ( 
+        SELECT 1
+        FROM lbaw2545.campaign_collaborator
+        WHERE campaign_id = v_campaign_id )
+    INTO v_has_collab;
+    IF v_has_collab = FALSE THEN
+        UPDATE lbaw2545.campaign SET state = 'suspended' WHERE id = v_campaign_id;
+    END IF;
+    RETURN COALESCE(NEW, OLD);
+END
+$BODY$
+LANGUAGE plpgsql;
+
+CREATE TRIGGER campaign_suspend_if_no_collab
+    AFTER DELETE ON lbaw2545.campaign_collaborator
+    FOR EACH ROW
+    EXECUTE PROCEDURE campaign_suspend_if_no_owner();</code></pre>
+    </td>
+  </tr>
+</table>
+
+
+<table>
+  <tr> <th>Trigger</th> <th>TRIGGER06</th> </tr>
+  <tr> <td>Description </td> <td>When a new <code>campaign_update</code> is inserted, automatically creates a corresponding <code>notification</code> (type <code>'update'</code>) with a link to the update, attaches it to the update record, and dispatches it to all campaign followers via <code>notification_received.</code></td> </tr>
+  <tr> <td>Justification </td> <td>Ensures that all followers are promptly informed whenever a campaign posts a new update, maintaining user engagement and transparency. Automating notification creation and delivery guarantees consistency across the platform and removes the need for manual or application-level notification handling.</td></tr>
+  <tr> <td colspan="2"><b>SQL Code</b></td> </tr>
+  <tr>
+    <td colspan="2">
+      <pre><code>CREATE OR REPLACE FUNCTION campaign_update_auto_notification() RETURNS TRIGGER AS
+$BODY$
+DECLARE
+    v_notif_id INTEGER;
+    v_name     TEXT;
+BEGIN
+    -- campaign name 
+    SELECT name INTO v_name
+    FROM lbaw2545.campaign
+    WHERE id = NEW.campaign_id;
+    -- create the notification
+    INSERT INTO lbaw2545.notification(type, content, link)
+    VALUES ('update',
+        CONCAT('New update on campaign ', v_name),
+        CONCAT('/campaigns/', NEW.campaign_id, '#update-', NEW.id) -- might be changed in the future
+    )
+    RETURNING id INTO v_notif_id;
+    -- attach to the update
+    UPDATE lbaw2545.campaign_update
+        SET notification_id = v_notif_id
+    WHERE id = NEW.id;
+    -- send the notifications
+    INSERT INTO lbaw2545.notification_received(notification_id, user_id)
+    SELECT v_notif_id, f.user_id
+        FROM lbaw2545.campaign_follower f
+    WHERE f.campaign_id = NEW.campaign_id AND f.user_id IS NOT NULL
+    ON CONFLICT (notification_id, user_id) DO NOTHING;
+    RETURN NEW;
+END
+$BODY$
+LANGUAGE plpgsql;
+
+CREATE TRIGGER campaign_update_auto_notification
+    AFTER INSERT ON lbaw2545.campaign_update
+    FOR EACH ROW
+    EXECUTE PROCEDURE campaign_update_auto_notification();</code></pre>
+    </td>
+  </tr>
+</table>
+
+
+<table>
+  <tr> <th>Trigger</th> <th>TRIGGER07</th> </tr>
+  <tr> <td>Description </td> <td>When a new <code>comment</code> is inserted, automatically creates a corresponding <code>notification</code> (type <code>'comment'</code>) with a link to the comment, attaches it to the comment record, and dispatches it to all relevant users including campaign collaborators and, if it is a reply, the author of the parent comment via <code>notification_received.<code></td> </tr>
+  <tr> <td>Justification </td> <td>Ensures that campaign collaborators and discussion participants are promptly informed about new comments or replies, fostering engagement and maintaining clear communication. Automating this process guarantees consistent and non-duplicated notifications without relying on manual or application-level handling.</td></tr>
+  <tr> <td colspan="2"><b>SQL Code</b></td> </tr>
+  <tr>
+    <td colspan="2">
+      <pre><code>CREATE OR REPLACE FUNCTION comment_auto_notification() RETURNS TRIGGER AS
+$BODY$
+DECLARE
+    v_notif_id INTEGER;
+    v_name     TEXT;
+BEGIN
+    -- campaign name 
+    SELECT name INTO v_name
+    FROM lbaw2545.campaign
+    WHERE id = NEW.campaign_id;
+    -- create the notification
+    INSERT INTO lbaw2545.notification(type, content, link)
+    VALUES ( 'comment',
+        CONCAT('New comment on campaign ', v_name),
+        CONCAT('/campaigns/', NEW.campaign_id, '#comment-', NEW.id) -- might be changed in the future
+    )
+    RETURNING id INTO v_notif_id;
+    -- attach to the comment
+    UPDATE lbaw2545.comment
+        SET notification_id = v_notif_id
+    WHERE id = NEW.id;
+    WITH recipients AS (
+        SELECT cc.user_id
+            FROM lbaw2545.campaign_collaborator cc
+            WHERE cc.campaign_id = NEW.campaign_id
+        UNION
+        SELECT p.author_id
+            FROM lbaw2545.comment p
+            WHERE NEW.parent_id IS NOT NULL AND p.id = NEW.parent_id
+    )
+     -- send the notifications
+    INSERT INTO lbaw2545.notification_received (notification_id, user_id)
+    SELECT v_notif_id, r.user_id
+        FROM recipients r
+    WHERE r.user_id IS NOT NULL
+    ON CONFLICT (notification_id, user_id) DO NOTHING;
+    RETURN NEW;
+END
+$BODY$
+LANGUAGE plpgsql;
+
+CREATE TRIGGER comment_auto_notification
+    AFTER INSERT ON lbaw2545.comment
+    FOR EACH ROW
+    EXECUTE PROCEDURE comment_auto_notification();
+</code></pre>
+    </td>
+  </tr>
+</table>
+
+
+<table>
+  <tr> <th>Trigger</th> <th>TRIGGER08</th> </tr>
+  <tr> <td>Description </td> <td>When a new <code>transaction</code> is inserted, automatically creates a corresponding <code>notification</code> (type <code>'transaction'</code>) with a link to the contribution, attaches it to the transaction record, and dispatches it to all campaign collaborators via <code>notification_received</code>.</td> </tr>
+  <tr> <td>Justification </td> <td>Keeps responsible collaborators promptly informed about new contributions, improving transparency and coordination. Automating this process guarantees consistent and non-duplicated notifications without relying on manual or application-level handling.</td></tr>
+  <tr> <td colspan="2"><b>SQL Code</b></td> </tr>
+  <tr>
+    <td colspan="2">
+      <pre><code>CREATE OR REPLACE FUNCTION transaction_auto_notification() RETURNS TRIGGER AS
+$BODY$
+DECLARE
+  v_notif_id INTEGER;
+  v_name     TEXT;
+BEGIN
+    -- campaign name
+    SELECT name INTO v_name
+        FROM lbaw2545.campaign
+    WHERE id = NEW.campaign_id;
+    -- create the notification
+    INSERT INTO lbaw2545.notification(type, content, link)
+    VALUES ('transaction',
+        CONCAT('New contribution to campaign ', v_name),
+        CONCAT('/campaigns/', NEW.campaign_id, '#transaction-', NEW.id) -- might be changed in the future
+    )
+    RETURNING id INTO v_notif_id;
+    -- attach to the transaction
+    UPDATE lbaw2545.transaction
+        SET notification_id = v_notif_id
+    WHERE id = NEW.id;
+    WITH recipients AS (
+        SELECT cc.user_id
+            FROM lbaw2545.campaign_collaborator cc
+        WHERE cc.campaign_id = NEW.campaign_id
+    )
+    -- send the notifications
+    INSERT INTO lbaw2545.notification_received (notification_id, user_id)
+    SELECT v_notif_id, r.user_id
+        FROM recipients r
+    WHERE r.user_id IS NOT NULL
+    ON CONFLICT (notification_id, user_id) DO NOTHING;
+    RETURN NEW;
+END
+$BODY$
+LANGUAGE plpgsql;
+
+CREATE TRIGGER transaction_auto_notification
+    AFTER INSERT ON lbaw2545.transaction
+    FOR EACH ROW
+    EXECUTE PROCEDURE transaction_auto_notification();</code></pre>
+    </td>
+  </tr>
+</table>
+
+
+<table>
+  <tr> <th>Trigger</th> <th>TRIGGER09</th> </tr>
+  <tr> <td>Description </td> <td>Before inserting a new <code>transaction</code>, checks whether the contributor is a collaborator/owner of the same campaign. If so, aborts the insert with an error (<code>You cannot donate to your own campaign.</code>).</td> </tr>
+  <tr> <td>Justification </td> <td>Enforces the platform’s conflict-of-interest policy by preventing self-funding, which could distort campaign metrics or enable manipulation. Ensures donation totals reflect genuine external support.</td></tr>
+  <tr> <td colspan="2"><b>SQL Code</b></td> </tr>
+  <tr>
+    <td colspan="2">
+      <pre><code>CREATE OR REPLACE FUNCTION forbid_self_donation() RETURNS TRIGGER AS
+$body$
+DECLARE
+    v_is_collab BOOLEAN;
+BEGIN
+    -- If no author skip.
+    IF NEW.author_id IS NULL THEN RETURN NEW; END IF;
+    SELECT EXISTS (
+        SELECT 1
+        FROM lbaw2545.campaign_collaborator cc
+        WHERE cc.campaign_id = NEW.campaign_id AND cc.user_id = NEW.author_id
+    ) INTO v_is_collab;
+    IF v_is_collab THEN RAISE EXCEPTION 'You cannot donate to your own campaign.'; END IF;
+    RETURN NEW;
+END
+$body$
+LANGUAGE plpgsql;
+
+CREATE TRIGGER forbid_self_donation
+    BEFORE INSERT ON lbaw2545.transaction
+    FOR EACH ROW
+    EXECUTE PROCEDURE forbid_self_donation();</code></pre>
+    </td>
+  </tr>
+</table>
+
+
+<table>
+  <tr> <th>Trigger</th> <th>TRIGGER10</th> </tr>
+  <tr> <td>Description </td> <td>BEFORE DELETE</b> on <code>campaign</code>, blocks deletion unless the campaign’s <code>state</code> is <code>'unfunded'</code>. Attempts to remove campaigns in any other state raise an error identifying the campaign and its current state.<td> </tr>
+  <tr> <td>Justification </td> <td>Enforces the business rule that campaigns can only be deleted while in the <code>'unfunded'</code> state, ensuring compliance with platform rules.</td></tr>
+  <tr> <td colspan="2"><b>SQL Code</b></td> </tr>
+  <tr>
+    <td colspan="2">
+      <pre><code>CREATE OR REPLACE FUNCTION prevent_campaign_delete_unless_unfunded()
+RETURNS TRIGGER AS
+$BODY$
+BEGIN
+  IF OLD.state <> 'unfunded' THEN
+    RAISE EXCEPTION 'Cannot delete campaign %: state is %, only "unfunded" campaigns can be deleted.', OLD.id, OLD.state
+  END IF;
+  RETURN OLD;
+END
+$BODY$
+LANGUAGE plpgsql;
+
+CREATE TRIGGER prevent_campaign_delete_unless_unfunded
+BEFORE DELETE ON lbaw2545.campaign
+FOR EACH ROW
+EXECUTE FUNCTION prevent_campaign_delete_unless_unfunded();</code></pre>
+    </td>
+  </tr>
+</table>

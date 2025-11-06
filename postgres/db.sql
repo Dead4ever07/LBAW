@@ -490,6 +490,25 @@ CREATE TRIGGER forbid_self_donation
     FOR EACH ROW
     EXECUTE PROCEDURE forbid_self_donation();
 
+-- TRIGGER10:
+-- Block DELETE of campaigns whose state is not 'unfunded'
+CREATE OR REPLACE FUNCTION prevent_campaign_delete_unless_unfunded()
+RETURNS TRIGGER AS
+$BODY$
+BEGIN
+  IF OLD.state <> 'unfunded' THEN
+    RAISE EXCEPTION 'Cannot delete campaign %: state is %, only "unfunded" campaigns can be deleted.', OLD.id, OLD.state
+  END IF;
+  RETURN OLD;
+END
+$BODY$
+LANGUAGE plpgsql;
+
+CREATE TRIGGER prevent_campaign_delete_unless_unfunded
+BEFORE DELETE ON lbaw2545.campaign
+FOR EACH ROW
+EXECUTE FUNCTION prevent_campaign_delete_unless_unfunded();
+
 
 -- Indexes
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
