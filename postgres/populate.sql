@@ -40,13 +40,3 @@ INSERT INTO
     lbaw2545.campaign_collaborator (campaign_id, user_id)
 values
     (1, 1);
-
-INSERT INTO
-    lbaw2545.transaction (amount, is_valid, author_id, campaign_id)
-VALUES
-    (
-        100, -- amount donated
-        TRUE, -- valid transaction
-        1, -- user_account.id
-        1 -- campaign.id
-    );

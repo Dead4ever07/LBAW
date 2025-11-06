@@ -1,3 +1,4 @@
+DROP SCHEMA IF EXISTS lbaw2545 CASCADE;
 CREATE SCHEMA IF NOT EXISTS lbaw2545;
 SET search_path TO lbaw2545;
 
@@ -488,3 +489,101 @@ CREATE TRIGGER forbid_self_donation
     BEFORE INSERT ON lbaw2545.transaction
     FOR EACH ROW
     EXECUTE PROCEDURE forbid_self_donation();
+
+
+-- Indexes
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+CREATE INDEX idx_campaign_state_start
+    ON lbaw2545.campaign (state, start_date DESC);
+
+CREATE INDEX idx_comment_parent_created
+ON lbaw2545.comment (parent_id, created_at);
+
+CREATE INDEX idx_user_notification_active
+  ON lbaw2545.notification_received (user_id, snoozed_until)
+  WHERE is_read = FALSE;
+
+-- FTS-Table
+ALTER TABLE lbaw2545.campaign
+ADD COLUMN IF NOT EXISTS search_vector tsvector;
+
+-- FTS-Index
+CREATE INDEX idx_campaign_search_vector
+ON lbaw2545.campaign USING GIN (search_vector);
+
+ALTER TABLE lbaw2545.campaign
+ADD COLUMN IF NOT EXISTS search_text TEXT;
+
+-- Fuzzy seach index
+CREATE INDEX idx_campaign_search_text_trgm
+ON lbaw2545.campaign USING GIN (search_text gin_trgm_ops);
+
+
+CREATE OR REPLACE FUNCTION update_campaign_search_vector()
+RETURNS TRIGGER AS $$
+DECLARE
+  cid INT;
+BEGIN
+  IF TG_TABLE_NAME = 'campaign' THEN
+    cid := NEW.id;
+
+  ELSIF TG_TABLE_NAME = 'campaign_update' THEN
+    cid := COALESCE(NEW.campaign_id, OLD.campaign_id);
+
+  ELSIF TG_TABLE_NAME = 'comment' THEN
+    cid := COALESCE(NEW.campaign_id, OLD.campaign_id);
+
+  ELSE
+    RETURN NEW;  
+  END IF;
+
+
+  UPDATE lbaw2545.campaign 
+    SET 
+    search_vector =
+        setweight(to_tsvector('english', coalesce(name, '')), 'A') ||
+        setweight(to_tsvector('english', coalesce(description, '')), 'B') ||
+        setweight((
+            SELECT to_tsvector('english', coalesce(string_agg(content, ' '), ''))
+            FROM lbaw2545.campaign_update
+            WHERE campaign_update.campaign_id = cid
+        ), 'C') ||
+        setweight((
+            SELECT to_tsvector('english', coalesce(string_agg(content, ' '), ''))
+            FROM lbaw2545.comment
+            WHERE comment.campaign_id = cid
+        ), 'D')
+  WHERE id = cid;
+  UPDATE lbaw2545.campaign 
+    SET 
+    search_text = concat_ws(' ', name, description)
+  WHERE id = cid;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+
+DROP TRIGGER IF EXISTS trg_campaign_search_update ON lbaw2545.campaign;
+
+CREATE TRIGGER trg_campaign_search_update
+AFTER INSERT OR UPDATE OF name, description ON lbaw2545.campaign
+FOR EACH ROW
+EXECUTE FUNCTION update_campaign_search_vector();
+
+
+DROP TRIGGER IF EXISTS trg_update_search_update ON lbaw2545.campaign_update;
+
+CREATE TRIGGER trg_update_search_update
+AFTER INSERT OR DELETE OR UPDATE OF content ON lbaw2545.campaign_update
+FOR EACH ROW
+EXECUTE FUNCTION update_campaign_search_vector();
+
+
+DROP TRIGGER IF EXISTS trg_comment_search_update ON lbaw2545.comment;
+
+CREATE TRIGGER trg_comment_search_update
+AFTER INSERT OR DELETE OR UPDATE OF content ON lbaw2545.comment
+FOR EACH ROW
+EXECUTE FUNCTION update_campaign_search_vector();

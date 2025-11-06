@@ -11,7 +11,7 @@ The goal of this artifact is to define and represent the key entities and relati
 
 ### 4.2 Additional Business Rules
 
-Additional business rules or restrictions that cannot be conveyed directly through the UML class diagram are described in this section. 
+Additional business rules or restrictions that cannot be conveyed directly through the UML class diagram are described in this section.
 
 | Identifier | Name | Description |
 |------------|------|-------------|
@@ -23,7 +23,7 @@ Additional business rules or restrictions that cannot be conveyed directly throu
 
 ## A5 : Relational Schema
 
-This artifact contains the Relational Schema obtained by the mapping from the Conceptual Data Model in agreement with the BCNF.
+This artifact contains the Relational Schema obtained from mapping the Conceptual Data Model in agreement with BCNF.
 
 ### 5.1 Relational Schema
 
@@ -63,7 +63,7 @@ DF = Default
 
 ### 5.3 Schema Validation
 
-Ensures each table’s attributes are uniquely determined by its keys, validating data integrity, preventing redundancy, and confirming the schema follows BCNF normalization.
+Ensures each table’s attributes are uniquely determined by its keys, validating data integrity, preventing redundancy, and confirming that the schema follows BCNF.
 
 
 | TABLE R01 | user_account |
@@ -173,7 +173,7 @@ Ensures each table’s attributes are uniquely determined by its keys, validatin
 
 ### 1. Database workload
 
-Understanding the system’s workload and performance goals is key to effective database design. This includes estimating the number of tuples in each relation and their expected growth over time. The table below summarizes these estimates for the database.
+Understanding the system’s workload and performance goals is key to effective database design. This includes estimating the number of tuples in each relation and their expected growth over time. The table below summarizes these estimates.
 
 | ID  | Relation name               | Order of magnitude      | Estimated growth   |
 |-----|-----------------------------|-------------------------|--------------------|
@@ -268,7 +268,7 @@ Understanding the system’s workload and performance goals is key to effective 
   </tr>
   <tr>
     <td>Justification</td>
-    <td>The comments have a defined structure similar to a Tree, by creating this index we eficiently are able to access all the comments children of a specific comment and display them by the order that they where created.</td>
+    <td>Comments follow a hierarchical (tree-like) structure. By creating this index, we can efficiently retrieve all child comments of a specific parent and display them in the order they were created. This significantly improves performance when rendering threaded discussions.</td>
   </tr>
   <tr>
   <td colspan="2"><b>SQL Code</b></td>
@@ -284,7 +284,7 @@ ON comment (parent_id, created_at);</code></pre>
 <table>
   <tr>
     <th>Index</th>
-    <th>IDX03</th>
+    <th>IDX04</th>
   </tr>
   <tr>
     <td>Relation</td>
@@ -308,7 +308,7 @@ ON comment (parent_id, created_at);</code></pre>
   </tr>
   <tr>
     <td>Justification</td>
-    <td>The table notification_user whould be a subject of many queries in order to keep the user updated on the current notifications, for that we use a index that filters per-user and ignores the already read ones so that the query fastly returns only meaningfull ones.</td>
+    <td>The user_notification table will be frequently queried to keep users updated. This index filters notifications per user and excludes already-read ones, ensuring that queries return only relevant, unread notifications efficiently.</td>
   </tr>
   <tr>
   <td colspan="2"><b>SQL Code</b></td>
@@ -329,19 +329,19 @@ ON comment (parent_id, created_at);</code></pre>
 <table>
   <tr>
     <th>Index</th>
-    <th>IDX03</th>
+    <th>IDX11</th>
   </tr>
   <tr>
     <td>Relation</td>
-    <td>user_notification</td>
+    <td>campaign</td>
   </tr>
   <tr>
     <td>Attribute</td>
-    <td>(user, snooze_until)</td>
+    <td>(name, description, update.content, comment.content)</td>
   </tr>
   <tr>
     <td>Type</td>
-    <td>B-Tree</td>
+    <td>GIN</td>
   </tr>
   <tr>
     <td>Cadinality</td>
@@ -353,7 +353,7 @@ ON comment (parent_id, created_at);</code></pre>
   </tr>
   <tr>
     <td>Justification</td>
-    <td>The table notification_user whould be a subject of many queries in order to keep the user updated on the current notifications, for that we use a index that filters per-user and ignores the already read ones so that the query fastly returns only meaningfull ones.</td>
+    <td>To support full-text search, we implemented an index on a search_vector field that aggregates the weighted text from name, description, update.content, and comment.content. Since search queries are common and updates less frequent, a GIN index is appropriate.</td>
   </tr>
   <tr>
   <td colspan="2"><b>SQL Code</b></td>
@@ -361,43 +361,130 @@ ON comment (parent_id, created_at);</code></pre>
     </tr>
   <tr>
   <td colspan="2">
-  <pre><code>ALTER TABLE campaign
-ADD COLUMN tsvectors tsvector;
+  <pre><code>
+-- FTS-Index
+ALTER TABLE lbaw2545.campaign
+ADD COLUMN IF NOT EXISTS search_vector tsvector;
 
-CREATE OR REPLACE FUNCTION update_campaign_search_vector(campaign_id INT)
-RETURNS VOID AS $$
+CREATE INDEX idx_campaign_search_vector
+ON lbaw2545.campaign USING GIN (search_vector);
+
+
+CREATE OR REPLACE FUNCTION update_campaign_search_vector()
+RETURNS TRIGGER AS $$
+DECLARE
+  cid INT;
 BEGIN
-  UPDATE campaign SET search_vector =
-    setweight(to_tsvector('english', coalesce(name, '')), 'A') ||
-    setweight(to_tsvector('english', coalesce(description, '')), 'B') ||
-    setweight((SELECT to_tsvector('english', string_agg(content, ' '))
-               FROM update WHERE campaign = campaign_id), 'C') ||
-    setweight((SELECT to_tsvector('english', string_agg(content, ' '))
-               FROM comment WHERE campaign = campaign_id), 'D')
-  WHERE id = campaign_id;
+  IF TG_TABLE_NAME = 'campaign' THEN
+    cid := NEW.id;
+
+  ELSIF TG_TABLE_NAME = 'campaign_update' THEN
+    cid := COALESCE(NEW.campaign_id, OLD.campaign_id);
+
+  ELSIF TG_TABLE_NAME = 'comment' THEN
+    cid := COALESCE(NEW.campaign_id, OLD.campaign_id);
+
+  ELSE
+    RETURN NEW;  
+  END IF;
+
+
+  UPDATE lbaw2545.campaign 
+    SET 
+    search_vector =
+        setweight(to_tsvector('english', coalesce(name, '')), 'A') ||
+        setweight(to_tsvector('english', coalesce(description, '')), 'B') ||
+        setweight((
+            SELECT to_tsvector('english', coalesce(string_agg(content, ' '), ''))
+            FROM lbaw2545.campaign_update
+            WHERE campaign_update.campaign_id = cid
+        ), 'C') ||
+        setweight((
+            SELECT to_tsvector('english', coalesce(string_agg(content, ' '), ''))
+            FROM lbaw2545.comment
+            WHERE comment.campaign_id = cid
+        ), 'D')
+  WHERE id = cid;
+  UPDATE lbaw2545.campaign 
+    SET 
+    search_text = concat_ws(' ', name, description)
+  WHERE id = cid;
+
+  RETURN NEW;
 END;
 \$\$ LANGUAGE plpgsql;
 
-CREATE TRIGGER trg_campaign_tsvector
-AFTER INSERT OR UPDATE ON campaign
+
+DROP TRIGGER IF EXISTS trg_campaign_search_update ON lbaw2545.campaign;
+
+CREATE TRIGGER trg_campaign_search_update
+AFTER INSERT OR UPDATE OF name, description ON lbaw2545.campaign
 FOR EACH ROW
-EXECUTE PROCEDURE update_campaign_search_vector(NEW.id);
+EXECUTE FUNCTION update_campaign_search_vector();
 
-CREATE TRIGGER trg_update_tsvector
-AFTER INSERT OR UPDATE OR DELETE ON update
-FOR EACH ROW EXECUTE PROCEDURE update_campaign_search_vector(
-    COALESCE(NEW.campaign, OLD.campaign)
-);
 
-CREATE TRIGGER trg_comment_tsvector
-AFTER INSERT OR UPDATE OR DELETE ON comment
-FOR EACH ROW EXECUTE PROCEDURE update_campaign_search_vector(
-    COALESCE(NEW.campaign, OLD.campaign)
-);
+DROP TRIGGER IF EXISTS trg_update_search_update ON lbaw2545.campaign_update;
 
-CREATE INDEX idx_campaign_search_vector
-ON campaign USING GIN (search_vector);
-</code></pre>
+CREATE TRIGGER trg_update_search_update
+AFTER INSERT OR DELETE OR UPDATE OF content ON lbaw2545.campaign_update
+FOR EACH ROW
+EXECUTE FUNCTION update_campaign_search_vector();
+
+
+DROP TRIGGER IF EXISTS trg_comment_search_update ON lbaw2545.comment;
+
+CREATE TRIGGER trg_comment_search_update
+AFTER INSERT OR DELETE OR UPDATE OF content ON lbaw2545.comment
+FOR EACH ROW
+EXECUTE FUNCTION update_campaign_search_vector();</code></pre>
+  </td>
+  </tr>
+</table>
+
+
+<table>
+  <tr>
+    <th>Index</th>
+    <th>IDX12</th>
+  </tr>
+  <tr>
+    <td>Relation</td>
+    <td>campaign</td>
+  </tr>
+  <tr>
+    <td>Attribute</td>
+    <td>(name, description)</td>
+  </tr>
+  <tr>
+    <td>Type</td>
+    <td>GIN</td>
+  </tr>
+  <tr>
+    <td>Cadinality</td>
+    <td>Medium</td>
+  </tr>
+  <tr>
+    <td>Clustering</td>
+    <td>No</td>
+  </tr>
+  <tr>
+    <td>Justification</td>
+    <td>To support fuzzy matching (e.g., word_similarity), we created a trigram-based index on search_text, derived from name and description. This improves search performance while allowing approximate string matching.</td>
+  </tr>
+  <tr>
+  <td colspan="2"><b>SQL Code</b></td>
+  </tr>
+    </tr>
+  <tr>
+  <td colspan="2">
+  <pre><code>CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+-- Fuzzy seach index
+ALTER TABLE lbaw2545.campaign
+ADD COLUMN IF NOT EXISTS search_text TEXT;
+
+CREATE INDEX idx_campaign_search_text_trgm
+ON lbaw2545.campaign USING GIN (search_text gin_trgm_ops);</code></pre>
   </td>
   </tr>
 </table>
