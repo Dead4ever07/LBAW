@@ -135,7 +135,7 @@ CREATE TABLE IF NOT EXISTS campaign_update (
     id              SERIAL PRIMARY KEY,
     content         TEXT NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    campaign_id     INTEGER NOT NULL REFERENCES campaign(id),
+    campaign_id     INTEGER NOT NULL REFERENCES campaign(id) ON DELETE CASCADE,
     notification_id INTEGER UNIQUE REFERENCES notification(id)
 );
 
@@ -145,8 +145,8 @@ CREATE TABLE IF NOT EXISTS resource (
     name            TEXT NOT NULL,
     path            TEXT NOT NULL,
     ordering        INTEGER NOT NULL,
-    campaign_id     INTEGER REFERENCES campaign(id),
-    update_id       INTEGER REFERENCES campaign_update(id),
+    campaign_id     INTEGER REFERENCES campaign(id) ON DELETE CASCADE,
+    update_id       INTEGER REFERENCES campaign_update(id) ON DELETE CASCADE,
     CHECK (
         (campaign_id IS NOT NULL AND update_id IS NULL) OR 
         (update_id IS NOT NULL AND campaign_id IS NULL)

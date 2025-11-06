@@ -322,3 +322,82 @@ ON comment (parent_id, created_at);</code></pre>
   </td>
   </tr>
 </table>
+
+
+#### 2.2 Full-text Search indexes
+
+<table>
+  <tr>
+    <th>Index</th>
+    <th>IDX03</th>
+  </tr>
+  <tr>
+    <td>Relation</td>
+    <td>user_notification</td>
+  </tr>
+  <tr>
+    <td>Attribute</td>
+    <td>(user, snooze_until)</td>
+  </tr>
+  <tr>
+    <td>Type</td>
+    <td>B-Tree</td>
+  </tr>
+  <tr>
+    <td>Cadinality</td>
+    <td>High</td>
+  </tr>
+  <tr>
+    <td>Clustering</td>
+    <td>No</td>
+  </tr>
+  <tr>
+    <td>Justification</td>
+    <td>The table notification_user whould be a subject of many queries in order to keep the user updated on the current notifications, for that we use a index that filters per-user and ignores the already read ones so that the query fastly returns only meaningfull ones.</td>
+  </tr>
+  <tr>
+  <td colspan="2"><b>SQL Code</b></td>
+  </tr>
+    </tr>
+  <tr>
+  <td colspan="2">
+  <pre><code>ALTER TABLE campaign
+ADD COLUMN tsvectors tsvector;
+
+CREATE OR REPLACE FUNCTION update_campaign_search_vector(campaign_id INT)
+RETURNS VOID AS $$
+BEGIN
+  UPDATE campaign SET search_vector =
+    setweight(to_tsvector('english', coalesce(name, '')), 'A') ||
+    setweight(to_tsvector('english', coalesce(description, '')), 'B') ||
+    setweight((SELECT to_tsvector('english', string_agg(content, ' '))
+               FROM update WHERE campaign = campaign_id), 'C') ||
+    setweight((SELECT to_tsvector('english', string_agg(content, ' '))
+               FROM comment WHERE campaign = campaign_id), 'D')
+  WHERE id = campaign_id;
+END;
+\$\$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_campaign_tsvector
+AFTER INSERT OR UPDATE ON campaign
+FOR EACH ROW
+EXECUTE PROCEDURE update_campaign_search_vector(NEW.id);
+
+CREATE TRIGGER trg_update_tsvector
+AFTER INSERT OR UPDATE OR DELETE ON update
+FOR EACH ROW EXECUTE PROCEDURE update_campaign_search_vector(
+    COALESCE(NEW.campaign, OLD.campaign)
+);
+
+CREATE TRIGGER trg_comment_tsvector
+AFTER INSERT OR UPDATE OR DELETE ON comment
+FOR EACH ROW EXECUTE PROCEDURE update_campaign_search_vector(
+    COALESCE(NEW.campaign, OLD.campaign)
+);
+
+CREATE INDEX idx_campaign_search_vector
+ON campaign USING GIN (search_vector);
+</code></pre>
+  </td>
+  </tr>
+</table>
