@@ -1,5 +1,24 @@
 # lbaw2545
 
+## Database setup
+
+Change the DB_SCHEMA to lbaw2545 `DB_SCHEMA=lbaw2545` and changed the DatabaseSeeder to seed our database, when we do
+```bash
+php artisan db:seed
+```
+then our database is created withing the schema defined.
+
+The correct way that the laravel should work is with migrations. With migrations, the laravel framework would be able to rollback to previous versions of our database if anything broke and also when deploying or change databases the laravel framework would be able to do it in a single command
+```bash
+php artisan migrate
+```
+I will not be deleting the laravel default migrates because of some features that they have that might be helfull in future.
+
+The database is already being properly generated and populated if we use the first code `php artisan db:seed` furthermore the database should be mapped out to Laravel. That is done inside the /app/Models/ folder by creating the model for each table.
+
+
+
+
 
 
 ## Getting started

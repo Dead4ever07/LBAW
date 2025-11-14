@@ -17,7 +17,7 @@ class DatabaseSeeder extends Seeder
         $schema = env('DB_SCHEMA');
 
         // Load the raw SQL file
-        $path = base_path('database/thingy-seed.sql');
+        $path = base_path('database/schema.sql');
         $sql = file_get_contents($path);
 
         // If DB_SCHEMA is set, expose it to the SQL script
