@@ -8,6 +8,7 @@
         <title>@yield('title', config('app.name', 'Laravel'))</title>
 
         <!-- Styles -->
+        @vite(['resources/css/app.css', 'resources/js/app.js'])
         <link rel="stylesheet" href="{{ asset('css/milligram.css') }}">
         <link rel="stylesheet" href="{{ asset('css/app.css') }}">
         @stack('styles')
